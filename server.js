@@ -30,7 +30,7 @@ updates.on('message_new', async (context) => {
     await funcCheckingFolderPhotos()  
 
     // Берем Домен
-    const domain = context.text.split('vk.com/')[1]
+    const domain = funcTakeDomain(context)
 
     // Проверка на уникальнсоть группы в БД
     const checkGroup = await funcFoundGroup(domain)
@@ -40,14 +40,27 @@ updates.on('message_new', async (context) => {
     const groupInfo = await funcGroupGetById(domain)
 
     // Спарсили PHOTO
-    const photos = await funcWallGet(domain, groupInfo)
+    const photos = await funcConstructorPhotos(domain, groupInfo)
  
     // Скачать ФОТО
-    await funcDownloadPhotos(photos)  
+    if(!photos) await funcDownloadPhotos(photos)  
 });  
 
 
 
+
+
+// Берем Домен
+function funcTakeDomain (context) {
+    let url = ''
+    if(context.text === undefined || null || false) url = context.attachments[0].url
+    else url = context.text
+
+    const domain = url.split('vk.com/')[1]
+    if(!domain) return context.send('Напишите корерктуню ссылку')
+
+    return domain
+}
 // Проверка User
 async function funcCheckPersonId(context) {
     if(context.senderId !== 559728637 && context.text !== '/start') context.send('Вы не являетесь владельцем или администратором :D') 
@@ -74,12 +87,14 @@ async function funcGroupGetById(domain) {
     })
     return result.groups[0]
 }
-// Спарсили PHOTO
-async function funcWallGet (domain, groupInfo) {
+// Спарсили PHOTO 
+async function funcWallGet (domain, groupInfo, offset) {
+    let isRes = true
+    
     const result = await token_user.api.wall.get({
         owner_id: groupInfo.id,
         domain: domain,
-        offset: 0,
+        offset: offset,
         count: 1,
         filter: 'all'
     })
@@ -90,12 +105,30 @@ async function funcWallGet (domain, groupInfo) {
         post_id: result.items[0].id,
         photos: []
     }
+
     result.items[0].attachments.map(item => {
-        array_photo.photos.push({id: item.photo.id, url: item.photo.orig_photo.url})
+        if(item.type === 'photo')  {
+            array_photo.photos.push({id: item.photo.id, url: item.photo.orig_photo.url})
+            isRes = true
+        }
+        else isRes = false
     })
 
-    return array_photo 
+    if(isRes) return array_photo
+    else false
 } 
+// Иттерация постов на типизацию, чтобы были только PHOTO
+async function funcConstructorPhotos (domain, groupInfo) {
+    let offset = 1;
+    let result;
+    
+    do {
+        result = await funcWallGet(domain, groupInfo, offset) 
+        if(!result) offset = offset + 1 
+    } while (!result);
+    
+    return result
+}
 // Скачать ФОТО
 async function funcDownloadPhotos (photo) {
     if(!fs.existsSync(path.resolve('photos', photo.domain))) {
