@@ -104,7 +104,8 @@ async function funcDownloadPhotos (photo) {
             else console.log(`Папка ${photo.domain} создана`)
         })
     }
-
+    
+    let namePhoto = []
     const download = photo.photos.map(async item => {
         const response = await axios({
             method: "GET",
@@ -113,6 +114,7 @@ async function funcDownloadPhotos (photo) {
         })
         
         const name = 'photo-' + item.id + '-' + photo.post_id + '.jpg'
+        namePhoto.push(name)
         const pathFull = path.resolve('photos', photo.domain, name)
         const writerStream = fs.createWriteStream(pathFull)
         
@@ -126,6 +128,20 @@ async function funcDownloadPhotos (photo) {
 
     await Promise.all(download)
     console.log('Все фотографии загружены');
+    
+    await prisma.group.create({
+        data: {
+            group_id: photo.group_id,
+            domain: photo.domain,
+            post_id: photo.post_id,
+            photo: {
+                create: photo.photos.map((item, index) => ({
+                    photo_id: item.id,
+                    name: namePhoto[index]
+                }))
+            }
+        }
+    })
 }
 
 
