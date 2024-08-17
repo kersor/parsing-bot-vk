@@ -4,6 +4,7 @@ import * as fs from 'fs'
 import path from 'path'
 import 'dotenv/config'
 import { PrismaClient } from '@prisma/client'
+import FormData from 'form-data';
 
 
 const token_group = new VK ({
@@ -41,9 +42,9 @@ updates.on('message_new', async (context) => {
 
     // Спарсили PHOTO
     const photos = await funcConstructorPhotos(domain, groupInfo)
- 
+
     // Скачать ФОТО
-    if(!photos) await funcDownloadPhotos(photos)  
+    await funcDownloadPhotos(photos)  
 });  
 
 
@@ -69,7 +70,7 @@ async function funcCheckPersonId(context) {
 // Создание папки Photos
 async function funcCheckingFolderPhotos() {
     if(!fs.existsSync(path.resolve('photos'))) {
-        fs.mkdir(path.resolve('photos'), { recursive: true }, err => {
+        fs.mkdirSync(path.resolve('photos'), { recursive: true }, err => {
             if(err) console.log('Error с созданием папки: photos' , err)
             else console.log('Папка photos создана');
         })
@@ -131,37 +132,44 @@ async function funcConstructorPhotos (domain, groupInfo) {
 }
 // Скачать ФОТО
 async function funcDownloadPhotos (photo) {
+    // Создаем подпапку группы
     if(!fs.existsSync(path.resolve('photos', photo.domain))) {
-        fs.mkdir(path.resolve('photos', photo.domain), { recursive: true }, err => {
+        fs.mkdirSync(path.resolve('photos', photo.domain), { recursive: true }, err => {
             if(err) console.log('Error с созданием папки: ' + photo.domain , err) 
             else console.log(`Папка ${photo.domain} создана`)
         })
     }
     
+    // Происходит скачивание PHOTO с сервера
     let namePhoto = []
     const download = photo.photos.map(async item => {
-        const response = await axios({
-            method: "GET",
-            url: item.url,
-            responseType: 'stream'
-        })
-        
-        const name = 'photo-' + item.id + '-' + photo.post_id + '.jpg'
-        namePhoto.push(name)
-        const pathFull = path.resolve('photos', photo.domain, name)
-        const writerStream = fs.createWriteStream(pathFull)
-        
-        response.data.pipe(writerStream)
-        
-        return new Promise((resolve, reject) => {
-            writerStream.on('finish', resolve);
-            writerStream.on('error', reject);
-        });
+        try {
+            const response = await axios({
+                method: "GET",
+                url: item.url,
+                responseType: 'stream'
+            })
+            
+            const name = `photo-${item.id}-${photo.post_id}.jpg`;
+            namePhoto.push(name)
+            const pathFull = path.resolve('photos', photo.domain, name)
+            const writerStream = fs.createWriteStream(pathFull)
+            
+            response.data.pipe(writerStream)
+            
+            return new Promise((resolve, reject) => {
+                writerStream.on('finish', resolve);
+                writerStream.on('error', reject);
+            });
+        } catch (error) {
+            console.log('Ошибка при загрузке фото: ', error)
+        }
     })
 
     await Promise.all(download)
     console.log('Все фотографии загружены');
     
+    // Регистрация в БД
     await prisma.group.create({
         data: {
             group_id: photo.group_id,
@@ -175,32 +183,61 @@ async function funcDownloadPhotos (photo) {
             }
         }
     })
+
+
+    // Отправка 
+    try {
+        // Получили адрес куда отправлять PHOTO
+        const uploadServer = await funcUploadServer()
+
+        let attachmentsPhotos = []
+        for (const item of namePhoto) {
+            const formData = new FormData()
+            // Настраиваем поток для отправки
+            formData.append(`photo`, fs.createReadStream(path.resolve('photos', photo.domain, item)));
+
+
+            // Загрузка на сервер
+            const uploadResponse = await axios.post(uploadServer.upload_url, formData, {
+                headers: {
+                    ...formData.getHeaders(),
+                },
+            });
+
+            // Сохранение результата
+            const saveResponse = await token_user.api.photos.saveWallPhoto({
+                server: uploadResponse.data.server,
+                photo: uploadResponse.data.photo,
+                hash: uploadResponse.data.hash,
+                group_id: process.env.GROUP_ID
+            });
+
+            // В пустой массив кладем форма отпрвки PHOTO
+            attachmentsPhotos.push(`photo${saveResponse[0].owner_id}_${saveResponse[0].id}`)
+        };
+
+        
+        const attachmentsPhotosRaeady = attachmentsPhotos.join(',')
+
+        // Отправка на стену группы
+        await token_user.api.wall.post({
+            owner_id: -process.env.GROUP_ID,
+            from_group: 1,
+            attachments: attachmentsPhotosRaeady,
+        })
+
+    } catch (error) {
+        console.log('Ошибка при загрузке фотографий на сервер: ', error)
+    }
+    
 }
-
-
-
-
-
-
 
 
 async function funcUploadServer() {
     const uploadServer = await token_user.api.photos.getWallUploadServer({
-        group_id: -226970068
+        group_id: process.env.GROUP_ID
     })
     return uploadServer
 }
-
-async function funcBufferPhoto(photo_url) {
-    const buffer = await axios({
-        method: "GET",
-        url: photo_url,
-        responseType: 'arraybuffer'
-    })
-    return buffer
-}
-
-
-
 
 updates.start()   
