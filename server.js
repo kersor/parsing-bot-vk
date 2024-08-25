@@ -23,6 +23,9 @@ const prisma = new PrismaClient()
 
 
 
+// * * * * * * * * * * * * * * 
+// * ФУНКЦИИ ДЛЯ НОВОЙ ГРУППЫ *
+// * * * * * * * * * * * * * * 
 
 updates.on('message_new', async (context) => {
     // Проверка User
@@ -42,7 +45,7 @@ updates.on('message_new', async (context) => {
     const groupInfo = await funcGroupGetById(domain)
 
     // Спарсили PHOTO
-    const photos = await funcConstructorPhotos(domain, groupInfo)
+    const photos = await funcConstructorPhotos(domain, groupInfo.id)
 
     // Скачать ФОТО
     const namePhoto = await funcDownloadPhotos(photos)  
@@ -55,9 +58,6 @@ updates.on('message_new', async (context) => {
 
     await funcSendPhotosInGroup(attachmentsPhotosRaeady)
 });  
-
-
-
 
 // Проверка User
 async function funcCheckPersonId(context) {
@@ -97,12 +97,12 @@ async function funcGroupGetById(domain) {
     return result.groups[0]
 }
 // Спарсили PHOTO 
-async function funcWallGet (domain, groupInfo_id, offset) {
+async function funcWallGet (domain, group_id, offset) {
     let isRes = true
     
     // Запрос на ФОТО у ОДНОГО поста у группы
     const post = await token_user.api.wall.get({
-        owner_id: groupInfo_id,
+        owner_id: group_id,
         domain: domain,
         offset: offset,
         count: 1,
@@ -113,7 +113,7 @@ async function funcWallGet (domain, groupInfo_id, offset) {
     // Подготовили массив для заполнения
     let post_object = {
         domain: domain,
-        group_id: groupInfo_id,
+        group_id: group_id,
         post_id: post.items[0].id,
         photos: []
     }
@@ -130,16 +130,16 @@ async function funcWallGet (domain, groupInfo_id, offset) {
     if(isRes) return post_object
     else false
 } 
-// Иттерация постов в группе, которую парсим на типизацию, чтобы были только PHOTO (могут попасться VIDEO)
-async function funcConstructorPhotos (domain, groupInfo) {
+// Итерация постов в группе, которую парсим на типизацию, чтобы были только PHOTO (могут попасться VIDEO)
+async function funcConstructorPhotos (domain, group_id) {
     let offset = 0;
     let result;
     
     do {
-        result = await funcWallGet(domain, groupInfo.id, offset) 
+        result = await funcWallGet(domain, group_id, offset) 
         if(!result) offset = offset + 1 
     } while (!result);
-    
+
     return result
 }
 // Скачать ФОТО
@@ -180,7 +180,7 @@ async function funcDownloadPhotos (photo) {
     })
 
     await Promise.all(download)
-    console.log(colors.green(`Все фотографии с группы были скачены`));  
+    console.log(colors.bgGray.brightGreen(`Все фотографии с группы были скачены`));  
     return namePhoto  
 }
 // Отправка данных в нашу БД
@@ -198,7 +198,7 @@ async function funcRegistredGroupInBase(photo, namePhoto) {
             }
         }
     })
-    console.log(colors.green('Все фотографии зарестрированы в нашу БД'));
+    console.log(colors.bgGray.brightGreen('Все фотографии зарестрированы в нашу БД'));
 }
 // Отправка данных в БД VK
 async function funcSendPhotosInBaseVk(photo, namePhoto) {
@@ -236,7 +236,7 @@ async function funcSendPhotosInBaseVk(photo, namePhoto) {
         
         const attachmentsPhotosRaeady = attachmentsPhotos.join(',')
 
-        console.log(colors.green('Все фотографии были отправлены на сервер VK'));
+        console.log(colors.bgGray.brightGreen('Все фотографии были отправлены на сервер VK'));
         return attachmentsPhotosRaeady
     } catch (error) {
         console.log('Ошибка при загрузке фотографий на сервер VK: ', error)
@@ -250,7 +250,7 @@ async function funcSendPhotosInGroup(attachmentsPhotosRaeady) {
             from_group: 1,
             attachments: attachmentsPhotosRaeady,
         })
-        console.log(colors.green('Все фотографии были выставлены на стену в группе'));
+        console.log(colors.bgGray.brightGreen('Все фотографии были выставлены на стену в группе'));
     } catch (error) {
         console.log('Ошибка при отправке фотографий на стену: ', error)
     }
@@ -264,3 +264,95 @@ async function funcUploadServer() {
 }
 
 updates.start()   
+
+
+// * * * * * * * * * * * * * * * * * * * * * * 
+// * ФУНКЦИИ ДЛЯ ГРУПП, КОТОРЫЕ УЖЕ ПАРСЯТСЯ *
+// * * * * * * * * * * * * * * * * * * * * * * 
+
+async function funcWorkInAlreadyParsingGroup() {
+    console.log(colors.bgGray.brightMagenta('Начало парсинга групп'))
+
+    // Вывод всех групп для дальнейших с ними работ
+    const getAllGroups = await funcGetAllGroups()
+    if(!getAllGroups.length) return
+
+    const photos = await funcMapGroups(getAllGroups)
+    
+}
+
+// Вывод всех групп
+async function funcGetAllGroups() {
+    const groups = await prisma.group.findMany({
+        include: {
+            photo: {
+                include: true
+            }
+        }
+    })
+    return groups
+}
+// Итерация групп
+async function funcMapGroups (getAllGroups) {
+    let newPosts = [] 
+  
+    const resultGetAllGroups = getAllGroups.map(async item => {
+        const photos = await funcConstructorPhotosAlrParsing(item.domain, item.group_id, item.post_id)
+        if(photos.photos.length > 0) newPosts.push(photos)
+    })
+    
+    await Promise.all(resultGetAllGroups)
+
+    return newPosts
+}
+// Итерация постов в группе, которую парсим на типизацию, чтобы были только PHOTO (могут попасться VIDEO)
+async function funcConstructorPhotosAlrParsing(domain, group_id, post_id) {
+    let offset = 0;
+    let result;
+
+    do {
+        result = await funcWallGetAlrParsing(domain, group_id, offset, post_id) 
+        if(!result) offset = offset + 1 
+    } while (!result);
+
+    return result
+}
+// Парсинг PHOTO уже зарегестрированных групп у нас в БД
+async function funcWallGetAlrParsing(domain, group_id, offset, post_id) {
+    console.log(colors.bgGray.brightMagenta(`Парсим группу ${domain} ...`))
+    let isRes = true
+    
+    // Запрос на ФОТО у ОДНОГО поста у группы
+    const post = await token_user.api.wall.get({
+        owner_id: group_id,
+        domain: domain,
+        offset: offset,
+        count: 1,
+        filter: 'all'
+    })
+    
+    // Условие на то, если у группы закончились посты
+    if(post.items.length > 0) {
+        // Подготовили массив для заполнения
+        let post_object = {
+            domain: domain,
+            group_id: group_id,
+            post_id: 0,
+            photos: []
+        }
+        // Условие на сходство постов, если одинаковые, то парсинга не будет
+        if(post_id !== post.items[0].id){
+            // Фильтрация поста на ФОТО
+            post.items[0].attachments.map(item => {
+                if(item.type === 'photo')  {
+                    post_object.photos.push({id: item.photo.id, url: item.photo.orig_photo.url})
+                    isRes = true
+                } else isRes = false
+            })
+        }
+        if(isRes) return post_object
+        else false
+    }
+}
+
+setInterval(async () => await funcWorkInAlreadyParsingGroup(), 5000)
