@@ -5,6 +5,7 @@ import path from 'path'
 import 'dotenv/config'
 import { PrismaClient } from '@prisma/client'
 import FormData from 'form-data';
+import colors from 'colors'
 
 
 const token_group = new VK ({
@@ -44,27 +45,23 @@ updates.on('message_new', async (context) => {
     const photos = await funcConstructorPhotos(domain, groupInfo)
 
     // Скачать ФОТО
-    await funcDownloadPhotos(photos)  
+    const namePhoto = await funcDownloadPhotos(photos)  
+
+    // Отпрвка данных в нашу БД
+    await funcRegistredGroupInBase(photos, namePhoto)
+
+    // Отправка фотографий на Сервер VK
+    const attachmentsPhotosRaeady = await funcSendPhotosInBaseVk(photos, namePhoto)
+
+    await funcSendPhotosInGroup(attachmentsPhotosRaeady)
 });  
 
 
 
 
-
-// Берем Домен
-function funcTakeDomain (context) {
-    let url = ''
-    if(context.text === undefined || null || false) url = context.attachments[0].url
-    else url = context.text
-
-    const domain = url.split('vk.com/')[1]
-    if(!domain) return context.send('Напишите корерктуню ссылку')
-
-    return domain
-}
 // Проверка User
 async function funcCheckPersonId(context) {
-    if(context.senderId !== 559728637 && context.text !== '/start') context.send('Вы не являетесь владельцем или администратором :D') 
+    if(context.senderId !== +process.env.SENDER_ID) return context.send('Вы не являетесь владельцем или администратором данной группы :D') 
     else return 
 }
 // Создание папки Photos
@@ -76,12 +73,23 @@ async function funcCheckingFolderPhotos() {
         })
     }
 }
+// Берем Домен
+function funcTakeDomain (context) {
+    let url = ''
+    if(context.text === undefined || null || false) url = context.attachments[0].url
+    else url = context.text
+
+    const domain = url.split('vk.com/')[1]
+    if(!domain) return context.send('Напишите корерктуню ссылку')
+
+    return domain
+} 
 // Проверка на уникальнсоть группы в БД
 async function funcFoundGroup (domain) {
     const result = await prisma.group.findFirst({where: {domain: domain}})
     return result
 }
-// Информация о группе
+// Информация о группе 
 async function funcGroupGetById(domain) {
     const result = await token_user.api.groups.getById({
         group_id: domain
@@ -89,42 +97,46 @@ async function funcGroupGetById(domain) {
     return result.groups[0]
 }
 // Спарсили PHOTO 
-async function funcWallGet (domain, groupInfo, offset) {
+async function funcWallGet (domain, groupInfo_id, offset) {
     let isRes = true
     
-    const result = await token_user.api.wall.get({
-        owner_id: groupInfo.id,
+    // Запрос на ФОТО у ОДНОГО поста у группы
+    const post = await token_user.api.wall.get({
+        owner_id: groupInfo_id,
         domain: domain,
         offset: offset,
         count: 1,
         filter: 'all'
     })
 
-    let array_photo = {
+
+    // Подготовили массив для заполнения
+    let post_object = {
         domain: domain,
-        group_id: groupInfo.id,
-        post_id: result.items[0].id,
+        group_id: groupInfo_id,
+        post_id: post.items[0].id,
         photos: []
     }
-
-    result.items[0].attachments.map(item => {
+ 
+    // Фильтрация поста на ФОТО
+    post.items[0].attachments.map(item => {
         if(item.type === 'photo')  {
-            array_photo.photos.push({id: item.photo.id, url: item.photo.orig_photo.url})
+            post_object.photos.push({id: item.photo.id, url: item.photo.orig_photo.url})
             isRes = true
         }
         else isRes = false
     })
 
-    if(isRes) return array_photo
+    if(isRes) return post_object
     else false
 } 
-// Иттерация постов на типизацию, чтобы были только PHOTO
+// Иттерация постов в группе, которую парсим на типизацию, чтобы были только PHOTO (могут попасться VIDEO)
 async function funcConstructorPhotos (domain, groupInfo) {
-    let offset = 1;
+    let offset = 0;
     let result;
     
     do {
-        result = await funcWallGet(domain, groupInfo, offset) 
+        result = await funcWallGet(domain, groupInfo.id, offset) 
         if(!result) offset = offset + 1 
     } while (!result);
     
@@ -132,9 +144,10 @@ async function funcConstructorPhotos (domain, groupInfo) {
 }
 // Скачать ФОТО
 async function funcDownloadPhotos (photo) {
+    const pathDomain = path.resolve('photos', photo.domain)
     // Создаем подпапку группы
-    if(!fs.existsSync(path.resolve('photos', photo.domain))) {
-        fs.mkdirSync(path.resolve('photos', photo.domain), { recursive: true }, err => {
+    if(!fs.existsSync(pathDomain)) {
+        fs.mkdirSync(pathDomain, { recursive: true }, err => {
             if(err) console.log('Error с созданием папки: ' + photo.domain , err) 
             else console.log(`Папка ${photo.domain} создана`)
         })
@@ -162,14 +175,16 @@ async function funcDownloadPhotos (photo) {
                 writerStream.on('error', reject);
             });
         } catch (error) {
-            console.log('Ошибка при загрузке фото: ', error)
+            console.log('Ошибка при скачивании фотографий: ', error)
         }
     })
 
     await Promise.all(download)
-    console.log('Все фотографии загружены');
-    
-    // Регистрация в БД
+    console.log(colors.green(`Все фотографии с группы были скачены`));  
+    return namePhoto  
+}
+// Отправка данных в нашу БД
+async function funcRegistredGroupInBase(photo, namePhoto) {
     await prisma.group.create({
         data: {
             group_id: photo.group_id,
@@ -183,8 +198,10 @@ async function funcDownloadPhotos (photo) {
             }
         }
     })
-
-
+    console.log(colors.green('Все фотографии зарестрированы в нашу БД'));
+}
+// Отправка данных в БД VK
+async function funcSendPhotosInBaseVk(photo, namePhoto) {
     // Отправка 
     try {
         // Получили адрес куда отправлять PHOTO
@@ -219,19 +236,25 @@ async function funcDownloadPhotos (photo) {
         
         const attachmentsPhotosRaeady = attachmentsPhotos.join(',')
 
-        // Отправка на стену группы
+        console.log(colors.green('Все фотографии были отправлены на сервер VK'));
+        return attachmentsPhotosRaeady
+    } catch (error) {
+        console.log('Ошибка при загрузке фотографий на сервер VK: ', error)
+    }
+}
+// Отправка данных на стену группы
+async function funcSendPhotosInGroup(attachmentsPhotosRaeady) {
+    try {
         await token_user.api.wall.post({
             owner_id: -process.env.GROUP_ID,
             from_group: 1,
             attachments: attachmentsPhotosRaeady,
         })
-
+        console.log(colors.green('Все фотографии были выставлены на стену в группе'));
     } catch (error) {
-        console.log('Ошибка при загрузке фотографий на сервер: ', error)
+        console.log('Ошибка при отправке фотографий на стену: ', error)
     }
-    
 }
-
 
 async function funcUploadServer() {
     const uploadServer = await token_user.api.photos.getWallUploadServer({
