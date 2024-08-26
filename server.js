@@ -1,6 +1,7 @@
 import { VK } from 'vk-io'
 import axios from 'axios'
 import * as fs from 'fs'
+import fsPromise from 'fs/promises';
 import path from 'path'
 import 'dotenv/config'
 import { PrismaClient } from '@prisma/client'
@@ -180,7 +181,7 @@ async function funcDownloadPhotos (photo) {
     })
 
     await Promise.all(download)
-    console.log(colors.bgGray.brightGreen(`Все фотографии с группы были скачены`));  
+    console.log(colors.bgGray.brightGreen(`Все фотографии с группы ${colors.bgGray.brightYellow(photo.domain)} были скачены`));  
     return namePhoto  
 }
 // Отправка данных в нашу БД
@@ -275,10 +276,17 @@ async function funcWorkInAlreadyParsingGroup() {
 
     // Вывод всех групп для дальнейших с ними работ
     const getAllGroups = await funcGetAllGroups()
-    if(!getAllGroups.length) return
+    if(!getAllGroups.length) {
+        console.log(colors.bgGray.brightMagenta('В БД нет групп для парсинга'))
+        return
+    }
 
+    // Иттерация групп
     const photos = await funcMapGroups(getAllGroups)
-    
+    // Скачивания фотографий
+    const downloadPhotos = await funcDownloadPhotosAlr(photos)
+
+    console.log('')
 }
 
 // Вывод всех групп
@@ -319,7 +327,7 @@ async function funcConstructorPhotosAlrParsing(domain, group_id, post_id) {
 }
 // Парсинг PHOTO уже зарегестрированных групп у нас в БД
 async function funcWallGetAlrParsing(domain, group_id, offset, post_id) {
-    console.log(colors.bgGray.brightMagenta(`Парсим группу ${domain} ...`))
+    console.log(colors.bgGray.brightMagenta(`Парсим группу ${colors.brightYellow(domain)} ...`))
     let isRes = true
     
     // Запрос на ФОТО у ОДНОГО поста у группы
@@ -349,9 +357,35 @@ async function funcWallGetAlrParsing(domain, group_id, offset, post_id) {
                     isRes = true
                 } else isRes = false
             })
-        }
+            console.log(colors.bgGray.brightMagenta(`В группе ${colors.brightYellow(domain)} ${colors.brightGreen('ЕСТЬ')} новый контент`))
+        }else console.log(colors.bgGray.brightMagenta(`В группе ${colors.brightYellow(domain)} ${colors.brightRed('НЕТ')} нового контента`))
         if(isRes) return post_object
         else false
+    }
+}
+// Иттерация объектов (групп с новыми фотографиями) для их скачивания
+async function funcDownloadPhotosAlr(photos) {
+    const downloadMapPhotos = photos.map(async item => {
+        await funcDeleteAllFilesInFolder(item.domain)
+        await funcDownloadPhotos(item)
+    })
+
+    await Promise.all(downloadMapPhotos)
+}
+// Удаление старых фотографий
+async function funcDeleteAllFilesInFolder(domain) {
+    try {
+        const pathFolder = path.resolve('photos', domain)
+        const files = await fsPromise.readdir(pathFolder);
+
+
+        for (const file of files) {
+            const filePath = path.join(pathFolder, file);
+            await fsPromise.unlink(filePath);
+            console.log(colors.bgGray.brightMagenta(`Удалена фотография ${colors.brightYellow(file)} из папки ${colors.brightYellow(domain)}`))
+        }
+    } catch (error) {
+        console.error('Ошибка при удалении файлов:', error);
     }
 }
 
