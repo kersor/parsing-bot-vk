@@ -47,7 +47,7 @@ const groupMiddleware = async (context, next) => {
     const userId = context.senderId
 
     if(userStates[userId] && userStates[userId].waitingForGroupLink){
-        console.log(context.text)
+        await funcWorkInParsingGroup(context)
         userStates[userId].waitingForGroupLink = false
     }
     await next()
@@ -55,7 +55,6 @@ const groupMiddleware = async (context, next) => {
 
 updates.use(groupMiddleware)
 updates.use(hearManager.middleware);
-
 
 
 
@@ -70,30 +69,48 @@ hearManager.hear(/^Начать$/, async (context) => {
                     payload: {
                         command: 'add_group'
                     }
-                })
-                .row()
+                }).row()
                 .textButton({
                     label: 'Вывести список групп',
                     payload: {
                         command: 'get_list_group'
                     }
-                })
-                .row()
+                }).row()  
         });
     }
 }) 
 
-
-
-
 // Если пользователь нажмет на кнопку Добавить группу, то сработает этот обработчик
 hearManager.hear(/^Добавить группу$/, async (context) => {
-    console.log(context.senderId, process.env.SENDER_ID)
     if (context.senderId === +process.env.SENDER_ID) {
         userStates[context.senderId] = { waitingForGroupLink: true };
-        await context.send('Напишите корректную ссылку группы:');
+        await context.send('Отправьте мне ссылку группы');
     }
 }) 
+
+
+hearManager.hear(/^Вывести список групп$/, async (context) => {
+    if (context.senderId === +process.env.SENDER_ID) {
+        const groups = await funcGetAllGroups()
+        if(groups.length !== 0){
+            groups.map(async (item, index) => {
+                await context.send({
+                    message: `Группа #${++index}: ${item.domain}\nФотографий хранится: ${item.photo.length}`,
+                    keyboard: Keyboard.builder()
+                        .urlButton({
+                            label: item.domain,
+                            url: `https://vk.com/${item.domain}`
+                        }).inline()
+                })
+            })
+        }
+        else{
+            context.send('В БД нет групп')
+            return
+        }
+    }
+}) 
+
 
 async function funcWorkInParsingGroup(context) {
     // Создание папки Photos
@@ -105,13 +122,32 @@ async function funcWorkInParsingGroup(context) {
 
     // Проверка на уникальнсоть группы в БД
     const checkGroup = await funcFoundGroup(domain)
-    if(checkGroup !== null) context.send(`${domain} уже парсится, выберите другую`)
-
+    if(checkGroup !== null) {
+        context.send(`${domain} уже парсится, выберите другую`)
+        return
+    }
+    
+    
     // Информация о группе
     const groupInfo = await funcGroupGetById(domain)
+    if(groupInfo.id === +process.env.GROUP_ID) {
+        context.send('Вставлять свою же группу нельзя')
+        return
+    } 
 
     // Спарсили PHOTO
     const photos = await funcConstructorPhotos(domain, groupInfo.id)
+
+    if(photos !== null || undefined) {
+        switch (photos.photos.length) {
+            case 1: context.send(`Было найдено ${photos.photos.length} фотография`) 
+                break;
+            case 2: case 3: case 4: context.send(`Было найдено ${photos.photos.length} фотографии`) 
+                break;
+            default: context.send(`Было найдено ${photos.photos.length} фотографий`) 
+                break;
+        }
+    }
 
     // Скачать ФОТО
     const namePhoto = await funcDownloadPhotos(photos)  
@@ -121,8 +157,9 @@ async function funcWorkInParsingGroup(context) {
 
     // Отправка фотографий на Сервер VK
     const attachmentsPhotosRaeady = await funcSendPhotosInBaseVk(photos, namePhoto)
+    if(attachmentsPhotosRaeady) context.send(`Фотографии были скачены и записаны в нашу Базу Данных`)
 
-    await funcSendPhotosInGroup(attachmentsPhotosRaeady)
+    await funcSendPhotosInGroup(attachmentsPhotosRaeady, context)
 }
 
 // Создание папки Photos
@@ -142,7 +179,7 @@ function funcTakeDomain (context) {
 
     const domain = url.split('vk.com/')[1]
     if(!domain) {
-        context.send('Напишите корерктуню ссылку')
+        context.send('Отправьте корректную ссылку')
         return false
     }
 
@@ -158,6 +195,7 @@ async function funcGroupGetById(domain) {
     const result = await token_user.api.groups.getById({
         group_id: domain
     })
+
     return result.groups[0]
 }
 // Спарсили PHOTO 
@@ -181,17 +219,21 @@ async function funcWallGet (domain, group_id, offset) {
         post_id: post.items[0].id,
         photos: []
     }
- 
-    // Фильтрация поста на ФОТО
-    post.items[0].attachments.map(item => {
-        if(item.type === 'photo')  {
-            post_object.photos.push({id: item.photo.id, url: item.photo.orig_photo.url})
-            isRes = true
-        }
-        else isRes = false
-    })
 
-    if(isRes) return post_object
+    if(post.items[0].is_pinned === undefined && post.items[0].attachments.length > 0){
+        // Фильтрация поста на ФОТО
+        post.items[0].attachments.map(item => {
+            if(item.type === 'photo')  {
+                post_object.photos.push({id: item.photo.id, url: item.photo.orig_photo.url})
+                isRes = true
+            }
+            else  isRes = false
+        })
+    }
+    else return false
+
+
+    if(isRes || post_object.photos.length > 0) return post_object
     else false
 } 
 // Итерация постов в группе, которую парсим на типизацию, чтобы были только PHOTO (могут попасться VIDEO)
@@ -307,7 +349,7 @@ async function funcSendPhotosInBaseVk(photo, namePhoto) {
     }
 }
 // Отправка данных на стену группы
-async function funcSendPhotosInGroup(attachmentsPhotosRaeady) {
+async function funcSendPhotosInGroup(attachmentsPhotosRaeady, context) {
     try {
         await token_user.api.wall.post({
             owner_id: -process.env.GROUP_ID,
@@ -315,6 +357,7 @@ async function funcSendPhotosInGroup(attachmentsPhotosRaeady) {
             attachments: attachmentsPhotosRaeady,
         })
         console.log(colors.bgGray.brightGreen('Все фотографии были выставлены на стену в группе'));
+        context.send(`Фотографии были выставлены в группу`)
     } catch (error) {
         console.log('Ошибка при отправке фотографий на стену: ', error)
     }
@@ -419,7 +462,10 @@ async function funcWallGetAlrParsing(domain, group_id, offset, post_id, group_bd
             photos: []
         }
         // Условие на сходство постов, если одинаковые, то парсинга не будет
-        if(post_id !== post.items[0].id && post.items[0].is_pinned === null){
+        const isPinned = post.items[0].is_pinned
+        const lengthAttach = post.items[0].attachments.length > 0
+
+        if(post_id !== post.items[0].id && isPinned === undefined && lengthAttach){
             // Фильтрация поста на ФОТО
             post.items[0].attachments.map(item => {
                 if(item.type === 'photo')  {
