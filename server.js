@@ -1,4 +1,5 @@
-import { VK } from 'vk-io'
+import { Keyboard, VK } from 'vk-io'
+import { HearManager } from '@vk-io/hear';
 import axios from 'axios'
 import * as fs from 'fs'
 import fsPromise from 'fs/promises';
@@ -24,14 +25,77 @@ const prisma = new PrismaClient()
 
 
 
+
+
+
+
+
+
+
+
+
 // * * * * * * * * * * * * * * 
 // * ФУНКЦИИ ДЛЯ НОВОЙ ГРУППЫ *
 // * * * * * * * * * * * * * * 
+const hearManager = new HearManager();
 
-updates.on('message_new', async (context) => {
-    // Проверка User
-    await funcCheckPersonId(context)
+// объект состояния пользователя
+const userStates = {};
 
+// middleware для ловли ссылки
+const groupMiddleware = async (context, next) => {
+    const userId = context.senderId
+
+    if(userStates[userId] && userStates[userId].waitingForGroupLink){
+        console.log(context.text)
+        userStates[userId].waitingForGroupLink = false
+    }
+    await next()
+}
+
+updates.use(groupMiddleware)
+updates.use(hearManager.middleware);
+
+
+
+
+// Добавление базовых кнопок
+hearManager.hear(/^Начать$/, async (context) => {
+    if(context.senderId === +process.env.SENDER_ID){
+        await context.send({ 
+            message: `Выберите дальнейшие действия:`,
+            keyboard: Keyboard.builder()
+                .textButton({
+                    label: 'Добавить группу',
+                    payload: {
+                        command: 'add_group'
+                    }
+                })
+                .row()
+                .textButton({
+                    label: 'Вывести список групп',
+                    payload: {
+                        command: 'get_list_group'
+                    }
+                })
+                .row()
+        });
+    }
+}) 
+
+
+
+
+// Если пользователь нажмет на кнопку Добавить группу, то сработает этот обработчик
+hearManager.hear(/^Добавить группу$/, async (context) => {
+    console.log(context.senderId, process.env.SENDER_ID)
+    if (context.senderId === +process.env.SENDER_ID) {
+        userStates[context.senderId] = { waitingForGroupLink: true };
+        await context.send('Напишите корректную ссылку группы:');
+    }
+}) 
+
+async function funcWorkInParsingGroup(context) {
     // Создание папки Photos
     await funcCheckingFolderPhotos()  
 
@@ -59,13 +123,8 @@ updates.on('message_new', async (context) => {
     const attachmentsPhotosRaeady = await funcSendPhotosInBaseVk(photos, namePhoto)
 
     await funcSendPhotosInGroup(attachmentsPhotosRaeady)
-});  
-
-// Проверка User
-async function funcCheckPersonId(context) {
-    if(context.senderId !== +process.env.SENDER_ID) return context.send('Вы не являетесь владельцем или администратором данной группы :D') 
-    else return 
 }
+
 // Создание папки Photos
 async function funcCheckingFolderPhotos() {
     if(!fs.existsSync(path.resolve('photos'))) {
@@ -268,7 +327,7 @@ async function funcUploadServer() {
     return uploadServer
 }
 
-updates.start()   
+updates.start().catch(console.error);   
 
 
 // * * * * * * * * * * * * * * * * * * * * * * 
@@ -276,6 +335,7 @@ updates.start()
 // * * * * * * * * * * * * * * * * * * * * * * 
 
 async function funcWorkInAlreadyParsingGroup() {
+    console.log('')
     console.log(colors.bgGray.brightMagenta('Начало парсинга групп'))
 
     // Вывод всех групп для дальнейших с ними работ
@@ -296,8 +356,6 @@ async function funcWorkInAlreadyParsingGroup() {
     await funcSendPhotosInGroups(attachmentsPhotosRaeady)
     // Обновление записей фотографий в БД 
     await funcUpdatePhotosInBase(updatePhotos)  
-
-    console.log('')
 }
 // Вывод всех групп
 async function funcGetAllGroups() {
@@ -324,10 +382,6 @@ async function funcMapGroups (getAllGroups) {
 
     return newPosts
 }
-
-
-
-
 // Итерация постов в группе, которую парсим на типизацию, чтобы были только PHOTO (могут попасться VIDEO)
 async function funcConstructorPhotosAlrParsing(domain, group_id, post_id, group_bd_id) {
     let offset = 0;
@@ -400,10 +454,6 @@ async function funcDownloadPhotosAlr(photos) {
 
     return photos
 }
-
-
-
-
 // Удаление старых фотографий
 async function funcDeleteAllFilesInFolder(domain) {
     try {
@@ -468,4 +518,4 @@ async function funcSendPhotosInGroups(photos) {
     }
 } 
 
-setInterval(async () => await funcWorkInAlreadyParsingGroup(), 5000)
+setInterval(async () => await funcWorkInAlreadyParsingGroup(), 600000)
