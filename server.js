@@ -19,7 +19,7 @@ const token_user = new VK({
     token: process.env.TOKEN_USER
 })
 const {updates} = token_group
-const prisma = new PrismaClient()
+const prisma = new PrismaClient()  
 
 
 
@@ -37,6 +37,7 @@ updates.on('message_new', async (context) => {
 
     // Берем Домен
     const domain = funcTakeDomain(context)
+    if(!domain) return
 
     // Проверка на уникальнсоть группы в БД
     const checkGroup = await funcFoundGroup(domain)
@@ -81,7 +82,10 @@ function funcTakeDomain (context) {
     else url = context.text
 
     const domain = url.split('vk.com/')[1]
-    if(!domain) return context.send('Напишите корерктуню ссылку')
+    if(!domain) {
+        context.send('Напишите корерктуню ссылку')
+        return false
+    }
 
     return domain
 } 
@@ -361,7 +365,7 @@ async function funcWallGetAlrParsing(domain, group_id, offset, post_id, group_bd
             photos: []
         }
         // Условие на сходство постов, если одинаковые, то парсинга не будет
-        if(post_id !== post.items[0].id){
+        if(post_id !== post.items[0].id && post.items[0].is_pinned === null){
             // Фильтрация поста на ФОТО
             post.items[0].attachments.map(item => {
                 if(item.type === 'photo')  {
@@ -464,4 +468,4 @@ async function funcSendPhotosInGroups(photos) {
     }
 } 
 
-setInterval(async () => await funcWorkInAlreadyParsingGroup(), 600000)
+setInterval(async () => await funcWorkInAlreadyParsingGroup(), 5000)
