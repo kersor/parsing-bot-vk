@@ -138,6 +138,7 @@ async function funcWorkInParsingGroup(context) {
     // Спарсили PHOTO
     const photos = await funcConstructorPhotos(domain, groupInfo.id)
 
+
     if(photos !== null || undefined) {
         switch (photos.photos.length) {
             case 1: context.send(`Было найдено ${photos.photos.length} фотография`) 
@@ -148,6 +149,7 @@ async function funcWorkInParsingGroup(context) {
                 break;
         }
     }
+
 
     // Скачать ФОТО
     const namePhoto = await funcDownloadPhotos(photos)  
@@ -198,6 +200,18 @@ async function funcGroupGetById(domain) {
 
     return result.groups[0]
 }
+// Итерация постов в группе, которую парсим на типизацию, чтобы были только PHOTO (могут попасться VIDEO)
+async function funcConstructorPhotos (domain, group_id) {
+    let offset = 0;
+    let result;
+    
+    do {
+        result = await funcWallGet(domain, group_id, offset) 
+        if(!result) offset = offset + 1 
+    } while (!result);
+
+    return result
+}
 // Спарсили PHOTO 
 async function funcWallGet (domain, group_id, offset) {
     let isRes = true
@@ -236,18 +250,6 @@ async function funcWallGet (domain, group_id, offset) {
     if(isRes || post_object.photos.length > 0) return post_object
     else false
 } 
-// Итерация постов в группе, которую парсим на типизацию, чтобы были только PHOTO (могут попасться VIDEO)
-async function funcConstructorPhotos (domain, group_id) {
-    let offset = 0;
-    let result;
-    
-    do {
-        result = await funcWallGet(domain, group_id, offset) 
-        if(!result) offset = offset + 1 
-    } while (!result);
-
-    return result
-}
 // Скачать ФОТО
 async function funcDownloadPhotos (photo) {
     const pathDomain = path.resolve('photos', photo.domain)
@@ -390,7 +392,8 @@ async function funcWorkInAlreadyParsingGroup() {
 
     // Иттерация групп
     const photos = await funcMapGroups(getAllGroups)
-    if(!photos || !photos.length) return
+    if(!photos[0] || !photos) return
+
     // Скачивания фотографий
     const updatePhotos = await funcDownloadPhotosAlr(photos)
     // Отправка фото в VK
@@ -418,11 +421,13 @@ async function funcMapGroups (getAllGroups) {
   
     const resultGetAllGroups = getAllGroups.map(async item => {
         const photos = await funcConstructorPhotosAlrParsing(item.domain, item.group_id, item.post_id, item.id)
-        if(photos.photos.length > 0) newPosts.push(photos)
+        if(photos) newPosts.push(photos.post_object)
     })
     
     await Promise.all(resultGetAllGroups)
 
+    // Фильтрация на наличие значений в фотографий
+    newPosts = newPosts.filter(item => item.photos.length > 0)
     return newPosts
 }
 // Итерация постов в группе, которую парсим на типизацию, чтобы были только PHOTO (могут попасться VIDEO)
@@ -430,17 +435,22 @@ async function funcConstructorPhotosAlrParsing(domain, group_id, post_id, group_
     let offset = 0;
     let result;
 
+    
     do {
         result = await funcWallGetAlrParsing(domain, group_id, offset, post_id, group_bd_id) 
-        if(!result) offset = offset + 1 
-    } while (!result);
+        if(result.still_iteration) {
+            offset += 1
+            console.log(colors.bgGray.brightMagenta(`Пост является закрепом или не имеет своих фотографий в группе ${colors.brightYellow(domain)} ...`))
+        }
+    } while (result.still_iteration);
+
+    
 
     return result
 }
 // Парсинг PHOTO уже зарегестрированных групп у нас в БД
 async function funcWallGetAlrParsing(domain, group_id, offset, post_id, group_bd_id) {
     console.log(colors.bgGray.brightMagenta(`Парсим группу ${colors.brightYellow(domain)} ...`))
-    let isRes = true
     
     // Запрос на ФОТО у ОДНОГО поста у группы
     const post = await token_user.api.wall.get({
@@ -451,40 +461,31 @@ async function funcWallGetAlrParsing(domain, group_id, offset, post_id, group_bd
         filter: 'all'
     })
     
-    // Условие на то, если у группы закончились посты
-    if(post.items.length > 0) {
-        // Подготовили объект для заполнения
-        let post_object = {
-            id: group_bd_id,
-            domain: domain,
-            group_id: group_id,
-            post_id: -1,
-            photos: []
-        }
-        // Условие на сходство постов, если одинаковые, то парсинга не будет
-        const isPinned = post.items[0].is_pinned
-        const lengthAttach = post.items[0].attachments.length > 0
-
-        if(post_id !== post.items[0].id && isPinned === undefined && lengthAttach){
-            // Фильтрация поста на ФОТО
-            post.items[0].attachments.map(item => {
-                if(item.type === 'photo')  {
-                    post_object.photos.push({id: item.photo.id, url: item.photo.orig_photo.url})
-                    isRes = true
-                } 
-                else {
-                    isRes = false
-                }
-            })
-            post_object.post_id = post.items[0].id
-            console.log(colors.bgGray.brightMagenta(`В группе ${colors.brightYellow(domain)} ${colors.brightGreen('ЕСТЬ')} новый контент`))
-        }
-        else {
-            console.log(colors.bgGray.brightMagenta(`В группе ${colors.brightYellow(domain)} ${colors.brightRed('НЕТ')} нового контента`))
-        }
-        if(isRes) return post_object
-        else false
+    let post_object = {
+        id: group_bd_id,
+        domain: domain,
+        group_id: group_id,
+        post_id: -1,
+        photos: []
     }
+
+    const items = post.items[0]
+    const isPinned = items.is_pinned
+    const attach = items.attachments
+
+
+    if(isPinned === undefined && attach.length > 0) {
+        if(items.id !== post_id){ 
+            attach.map(item => {
+                if(item.type === 'photo') post_object.photos.push({id: item.photo.id, url: item.photo.orig_photo.url})
+            })
+            post_object.post_id = items.id
+            return {still_iteration: false, post_object: post_object}
+        }
+        else return {still_iteration: false, post_object: post_object}
+    }else{
+        return {still_iteration: true}
+    }   
 }
 // Итерация объектов (групп с новыми фотографиями) для их скачивания
 async function funcDownloadPhotosAlr(photos) {
@@ -564,4 +565,4 @@ async function funcSendPhotosInGroups(photos) {
     }
 } 
 
-setInterval(async () => await funcWorkInAlreadyParsingGroup(), 600000)
+setInterval(async () => await funcWorkInAlreadyParsingGroup(), 5000)
