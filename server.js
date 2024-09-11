@@ -91,25 +91,54 @@ hearManager.hear(/^Добавить группу$/, async (context) => {
 
 hearManager.hear(/^Вывести список групп$/, async (context) => {
     if (context.senderId === +process.env.SENDER_ID) {
-        const groups = await funcGetAllGroups()
-        if(groups.length !== 0){
-            groups.map(async (item, index) => {
-                await context.send({
-                    message: `Группа #${++index}: ${item.domain}\nФотографий хранится: ${item.photo.length}`,
-                    keyboard: Keyboard.builder()
-                        .urlButton({
-                            label: item.domain,
-                            url: `https://vk.com/${item.domain}`
-                        }).inline()
-                })
-            })
-        }
-        else{
-            context.send('В БД нет групп')
-            return
-        }
+        await funcIterationGroup(context)
     }
 }) 
+
+
+hearManager.hear(/^Удалить группу$/, async (context) => {
+    if(context.senderId === +process.env.SENDER_ID) {
+        const {id, domain} = context.messagePayload.item
+        await prisma.group.delete(
+            {where: {id: id}}
+        )
+        context.send(`Группа ${domain} была удалена`)
+        await funcIterationGroup(context)
+    }
+})
+
+
+
+async function funcIterationGroup(context) {
+    const groups = await funcGetAllGroups()
+    if(groups.length !== 0){
+        groups.map(async (item, index) => {
+            await context.send({
+                message: `Группа #${++index}: ${item.domain}\nФотографий хранится: ${item.photo.length}`,
+                keyboard: Keyboard.builder()
+                    .urlButton({
+                        label: item.domain,
+                        url: `https://vk.com/${item.domain}`
+                    }).inline()
+                    .textButton({
+                        label: 'Удалить группу',
+                        color: Keyboard.NEGATIVE_COLOR,
+                        payload: {
+                            command: 'delete_group',
+                            item: {
+                                domain: item.domain,
+                                id: item.id
+                            }
+                        },
+                    }).inline()
+            })
+        })
+    }
+    else{
+        context.send('В БД нет групп')
+        return
+    }
+}
 
 
 async function funcWorkInParsingGroup(context) {
@@ -565,4 +594,4 @@ async function funcSendPhotosInGroups(photos) {
     }
 } 
 
-setInterval(async () => await funcWorkInAlreadyParsingGroup(), 5000)
+setInterval(async () => await funcWorkInAlreadyParsingGroup(), 600000)
